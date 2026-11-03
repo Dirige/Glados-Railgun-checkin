@@ -102,6 +102,7 @@ class Config:
     ENV_COOKIES = "GLADOS_COOKIES"
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
+    ENV_PUSHPLUS = "PUSHPLUS_TOKEN"
 
     """默认兑换计划（none 表示不自动兑换）"""
     DEFAULT_EXCHANGE_PLAN = "none"
@@ -122,6 +123,7 @@ class Config:
     def __init__(self):
         self.push_key: str = ""
         self.serverchan_key: str = ""
+        self.pushplus_token: str = ""
         self.cookies_list: List[str] = []
         self.exchange_plan: str = self.DEFAULT_EXCHANGE_PLAN
         self.verbose: bool = self.DEFAULT_VERBOSE
@@ -131,6 +133,7 @@ class Config:
         """加载配置"""
         push_key_env: Optional[str] = os.environ.get(self.ENV_PUSH_KEY)
         serverchan_key_env: Optional[str] = os.environ.get(self.ENV_SERVERCHAN_KEY)
+        pushplus_token_env: Optional[str] = os.environ.get(self.ENV_PUSHPLUS)
         raw_cookies_env: Optional[str] = os.environ.get(self.ENV_COOKIES)
         exchange_plan_env: Optional[str] = os.environ.get(self.ENV_EXCHANGE_PLAN)
         verbose_env: Optional[str] = os.environ.get(self.ENV_VERBOSE)
@@ -146,6 +149,12 @@ class Config:
             self.serverchan_key = ""
         else:
             self.serverchan_key = serverchan_key_env
+
+        if not pushplus_token_env:
+            logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_PUSHPLUS}' 未设置。")
+            self.pushplus_token = ""
+        else:
+            self.pushplus_token = pushplus_token_env
 
         if not raw_cookies_env:
             logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_COOKIES}' 未设置。")
@@ -554,6 +563,33 @@ class ServerChanBackend(PushBackend):
             return False
 
 
+class PushPlusBackend(PushBackend):
+    """PushPlus 后端（www.pushplus.plus，HTTP 接口，纯 requests 实现）"""
+
+    name = "PushPlus"
+    SEND_URL = "https://www.pushplus.plus/send"
+
+    def __init__(self, token: str):
+        self.token = token
+
+    def send(self, title: str, payload: dict) -> bool:
+        try:
+            body = {
+                "token": self.token,
+                "title": title,
+                "content": self._render(payload),
+                "template": "txt",
+            }
+            resp = requests.post(self.SEND_URL, json=body, timeout=(15, 30)).json()
+            if isinstance(resp, dict) and resp.get("code") == 200:
+                return True
+            logger.error(f"{LogEmoji.ERROR} [{self.name}] 推送失败: 接口返回 {resp}")
+            return False
+        except Exception as e:
+            logger.error(f"{LogEmoji.ERROR} [{self.name}] 推送失败: {e}")
+            return False
+
+
 class PushService:
     """推送服务：聚合多个后端，向全部已配置后端发送（都发）"""
 
@@ -564,6 +600,8 @@ class PushService:
                 self.backends.append(PushDeerBackend(config.push_key))
             if getattr(config, "serverchan_key", ""):
                 self.backends.append(ServerChanBackend(config.serverchan_key))
+            if getattr(config, "pushplus_token", ""):
+                self.backends.append(PushPlusBackend(config.pushplus_token))
 
     def send(self, title: str, payload: dict) -> bool:
         """向所有已配置后端发送推送，只要有一个成功即视为成功"""
